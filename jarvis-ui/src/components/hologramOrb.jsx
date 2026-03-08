@@ -1,6 +1,7 @@
 import  { useRef, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { X, LogIn, Globe, Square, Phone, UserPlus, MessageSquare } from "lucide-react";
+import axios from 'axios';
 
 const JarvisCore = () => {
   const navigate = useNavigate();
@@ -22,6 +23,7 @@ const JarvisCore = () => {
   const recognitionRef = useRef(null);
   const [voicesLoaded, setVoicesLoaded] = useState(false);
   const [britishVoice, setBritishVoice] = useState(null);
+  const [responseText, setResponseText] = useState('');
 
   const mockChats = [
     { id: 1, title: "Quantum Core Status" },
@@ -260,25 +262,106 @@ const JarvisCore = () => {
 
   // Define speakResponse FIRST before any functions that call it
   const speakResponse = (text) => {
-  window.speechSynthesis.cancel(); // Clear any pending speech
-  
-  return new Promise((resolve) => {
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 0.95;
-    utterance.pitch = 0.8;
-    
-    // Force English voice (works in 95% of browsers)
-    utterance.lang = 'en-GB';
-    
-    utterance.onend = resolve;
-    utterance.onerror = (e) => {
-      console.error("Speech error:", e);
-      resolve();
+    if (britishVoice) utterance.voice = britishVoice;
+    speechSynthesis.speak(utterance);
+  };
+
+  // Process voice command and call backend
+  const processCommand = async (command) => {
+    try {
+      const res = await fetch("http://localhost:5000/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: command })
+      });
+
+      const data = await res.json();
+      const reply = data.reply || "I'm not sure how to respond to that.";
+      setLastResponse(reply);
+      speakResponse(reply);
+    } catch (err) {
+      console.error("Voice processing error:", err);
+      speakResponse("Sorry, I couldn't process that.");
+    }
+
+    if (isListening && recognitionRef.current) {
+      recognitionRef.current.start(); // restart after response
+    }
+  };
+
+  // Toggle listening state (mic on/off)
+  const toggleListening = async () => {
+    try {
+      if (isListening) {
+        speakResponse("Microphone offline");
+        recognitionRef.current.stop();
+      } else {
+        speakResponse("Listening...");
+        recognitionRef.current.start();
+      }
+      setIsListening(!isListening);
+    } catch (error) {
+      console.error("Mic toggle error:", error);
+      setIsListening(false);
+    }
+  };
+
+  // Initialize voice recognition
+  useEffect(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.lang = "en-US";
+
+    recognition.onresult = (event) => {
+      const transcript = event.results[event.results.length - 1][0].transcript;
+      setLastCommand(transcript);
+      processCommand(transcript);
     };
 
-    window.speechSynthesis.speak(utterance);
-  });
-};
+    recognition.onerror = (event) => {
+      console.error("Speech recognition error:", event.error);
+      setIsListening(false);
+    };
+
+    recognition.onend = () => {
+      if (isListening) recognition.start(); // Keep listening
+    };
+
+    recognitionRef.current = recognition;
+  }, [isListening]);
+
+  // Load British voice
+  useEffect(() => {
+    const loadVoices = () => {
+      const voices = speechSynthesis.getVoices();
+      const preferredVoices = [
+        "Google UK English Male",
+        "Daniel",
+        "Microsoft George - English (United Kingdom)",
+        "English (United Kingdom)"
+      ];
+
+      const foundVoice = voices.find(
+        (voice) =>
+          preferredVoices.some((name) => voice.name.includes(name)) ||
+          voice.lang.includes("en-GB")
+      );
+
+      setBritishVoice(foundVoice || null);
+      setVoicesLoaded(true);
+    };
+
+    if (speechSynthesis.onvoiceschanged !== undefined) {
+      speechSynthesis.onvoiceschanged = loadVoices;
+    }
+
+    loadVoices();
+  }, []);
+
+  // OTP Timer
   useEffect(() => {
     let timer;
     if (isOtpPopupOpen && otpTimer > 0) {
@@ -289,179 +372,10 @@ const JarvisCore = () => {
     return () => clearInterval(timer);
   }, [isOtpPopupOpen, otpTimer]);
 
-    // Add this with your other useEffect hooks
-  useEffect(() => {
-    // Load available voices
-    const loadVoices = () => {
-      const voices = window.speechSynthesis.getVoices();
-      const preferredVoices = [
-        'Google UK English Male',  // Chrome
-        'Daniel',                 // Safari
-        'Microsoft George - English (United Kingdom)',  // Edge
-        'English (United Kingdom)' // General fallback
-      ];
-      
-      // Find the best available British voice
-      const foundVoice = voices.find(voice => 
-        preferredVoices.some(name => voice.name.includes(name)) ||
-        voice.lang.includes('en-GB')
-      );
-      
-      setBritishVoice(foundVoice || null);
-      setVoicesLoaded(true);
-    };
-
-    // Chrome needs this to load voices
-    if (speechSynthesis.onvoiceschanged !== undefined) {
-      speechSynthesis.onvoiceschanged = loadVoices;
-    }
-    
-    // Initial load
-    loadVoices();
-  }, []);
-
-  useEffect(() => {
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  recognitionRef.current = new SpeechRecognition();
-  recognitionRef.current.continuous = false; // Process one command at a time
-  recognitionRef.current.interimResults = false; // Only final results
-  recognitionRef.current.maxAlternatives = 1; // Single interpretation
-
-  recognitionRef.current.onresult = (event) => {
-    const transcript = event.results[0][0].transcript;
-    processCommand(transcript);
-  };
-
-  recognitionRef.current.onerror = (event) => {
-    console.error("Recognition error:", event.error);
-    setIsListening(false);
-  };
-
-  recognitionRef.current.onend = () => {
-    if (isListening) {
-      // Auto-restart if still in listening mode
-      setTimeout(() => recognitionRef.current.start(), 100);
-    }
-  };
-
-  return () => recognitionRef.current.stop();
-}, [isListening]);
-
-
-
-    // Add this after your existing useEffect hooks
-  useEffect(() => {
-    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = true;
-      recognitionRef.current.interimResults = false;
-      recognitionRef.current.lang = 'en-US';
-
-      recognitionRef.current.onresult = (event) => {
-        const transcript = event.results[event.results.length - 1][0].transcript;
-        setLastCommand(transcript);
-        processCommand(transcript);
-      };
-
-      recognitionRef.current.onerror = (event) => {
-        console.error('Speech recognition error', event.error);
-        setIsListening(false);
-      };
-
-      return () => {
-        if (recognitionRef.current) {
-          recognitionRef.current.stop();
-        }
-      };
-    }
-  }, []);
-
-  useEffect(() => {
-  console.log('Available voices:', window.speechSynthesis.getVoices());
-}, [voicesLoaded]);
-
-  // Then your useEffect hooks
-  useEffect(() => {
-    // Voice loading logic
-    const loadVoices = () => {
-      const voices = window.speechSynthesis.getVoices();
-      const preferredVoices = [
-        'Google UK English Male',
-        'Daniel',
-        'Microsoft George - English (United Kingdom)',
-        'English (United Kingdom)'
-      ];
-      
-      const foundVoice = voices.find(voice => 
-        preferredVoices.some(name => voice.name.includes(name)) ||
-        voice.lang.includes('en-GB')
-      );
-      
-      setBritishVoice(foundVoice || null);
-      setVoicesLoaded(true);
-    };
-
-    if (speechSynthesis.onvoiceschanged !== undefined) {
-      speechSynthesis.onvoiceschanged = loadVoices;
-    }
-    
-    loadVoices();
-  }, [])
-
- const processCommand = async (command) => {
-  const responseMap = {
-    hello: "Hello sir, how may I assist you?",
-    time: `The time is ${new Date().toLocaleTimeString('en-GB')}`,
-    "how are you": "All systems operational, sir",
-    "dad's back": "Welcome home, sir. Shall I prepare the house?",
-    "open side bar": "Opening sidebar, sir",
-    "Jayesh is mad": "Jayesh is always mad, sir. Shall I prepare the emergency protocols?",
-    
-  };
-
-  const lowerCommand = command.toLowerCase();
-  let response = "I didn't quite catch that, sir.";
-
-  for (const [keyword, reply] of Object.entries(responseMap)) {
-    if (lowerCommand.includes(keyword)) {
-      response = reply;
-      break;
-    }
-  }
-
-  await speakResponse(response);
-  if (isListening) recognitionRef.current.start(); // Re-arm the listener
+  const handleOtpChange = (e) => {
+  setOtp(e.target.value); // Replace `setOtp` with your actual state setter
 };
 
-  const toggleListening = async () => {
-  try {
-    if (isListening) {
-      await speakResponse("Microphone offline");
-      recognitionRef.current.stop();
-    } else {
-      await speakResponse("Listening...");
-      recognitionRef.current.start();
-    }
-    setIsListening(!isListening);
-  } catch (error) {
-    console.error("Mic toggle error:", error);
-    setIsListening(false);
-  }
-};
-
-  const handleOtpChange = (index, value) => {
-    if (value.length > 1) return;
-    if (!/^\d*$/.test(value)) return;
-
-    const newOtp = [...otp];
-    newOtp[index] = value;
-    setOtp(newOtp);
-
-    if (value && index < 3) {
-      otpInputRefs[index + 1].current.focus();
-    }
-  };
 
   const handleOtpKeyDown = (index, e) => {
     if (e.key === "Backspace" && !otp[index] && index > 0) {
@@ -471,88 +385,74 @@ const JarvisCore = () => {
 
   return (
     <div style={{ position: "relative", width: "100vw", height: "100vh" }}>
+  {/* Voice Test Button */}
+  <button 
+    onClick={() => {
+      const testUtterance = new SpeechSynthesisUtterance("Testing voice synthesis");
+      window.speechSynthesis.speak(testUtterance);
+    }}
+    style={{ 
+      position: 'absolute',
+      top: '20px',
+      left: '50%',
+      transform: 'translateX(-50%)',
+      padding: '10px 20px',
+      background: '#00b7eb',
+      color: '#000',
+      fontWeight: 'bold',
+      border: 'none',
+      borderRadius: '8px',
+      cursor: 'pointer',
+      boxShadow: '0 0 10px #00b7eb'
+    }}
+  >
+    Test Voice
+  </button>
 
-      <button 
-  onClick={() => {
-    const testUtterance = new SpeechSynthesisUtterance("Testing voice synthesis");
-    window.speechSynthesis.speak(testUtterance);
-  }}
-  style={{ 
+  {/* Mic Button + Command Display */}
+  <div style={{
     position: 'absolute',
-    bottom: '100px',
+    bottom: '30px',
     left: '50%',
     transform: 'translateX(-50%)',
-    padding: '10px',
-    background: '#00b7eb',
-    color: 'black'
-  }}
->
-  Test Voice
-</button>
+    zIndex: 10,
+    textAlign: 'center',
+    color: '#00b7eb'
+  }}>
+    {/* Voice Toggle Button */}
+    <button
+      onClick={toggleListening}
+      style={{
+        background: isListening ? '#ff3d3d' : '#00b7eb',
+        color: '#000',
+        border: 'none',
+        borderRadius: '50%',
+        width: '70px',
+        height: '70px',
+        fontSize: '28px',
+        cursor: 'pointer',
+        boxShadow: isListening ? '0 0 25px #ff3d3d' : '0 0 25px #00b7eb',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        transition: 'all 0.3s ease',
+        animation: isListening ? 'pulse 1.5s infinite' : 'none'
+      }}
+    >
+      {isListening ? '✖' : '🎤'}
+    </button>
 
-      <button
-  onClick={toggleListening}
-  style={{
-    background: isListening ? '#ff3d3d' : '#00b7eb',
-    color: '#000',
-    border: '2px solid #00b7eb',
-    borderRadius: '50%',
-    width: '70px',
-    height: '70px',
-    fontSize: '24px',
-    cursor: 'pointer',
-    boxShadow: isListening ? '0 0 25px #ff3d3d' : '0 0 25px #00b7eb',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    transition: 'all 0.3s ease'
-  }}
->
-  {isListening ? (
-    <div style={{ animation: 'pulse 1.5s infinite' }}>🔴</div>
-  ) : (
-    '🎤'
-  )}
-</button>
+    {/* Live Feedback */}
+    <div style={{ marginTop: '12px', fontSize: '14px' }}>
+      {lastCommand && <div><strong>Command:</strong> {lastCommand}</div>}
+      {lastResponse && <div><strong>Response:</strong> {lastResponse}</div>}
+    </div>
+  </div>
 
-            {/* Add this right before your canvas element */}
-      <div style={{
-        position: 'absolute',
-        bottom: '20px',
-        left: '50%',
-        transform: 'translateX(-50%)',
-        zIndex: 10,
-        textAlign: 'center',
-        color: '#00b7eb'
-      }}>
-        <button
-          onClick={toggleListening}
-          style={{
-            background: isListening ? '#ff0000' : '#00b7eb',
-            color: '#000',
-            border: 'none',
-            borderRadius: '50%',
-            width: '60px',
-            height: '60px',
-            fontSize: '16px',
-            cursor: 'pointer',
-            boxShadow: '0 0 15px #00b7eb',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center'
-          }}
-        >
-          {isListening ? '✖' : '🎤'}
-        </button>
-        <div style={{ marginTop: '10px' }}>
-          {lastCommand && <div>Command: {lastCommand}</div>}
-          {lastResponse && <div>Response: {lastResponse}</div>}
-        </div>
-      </div>
+{/* Canvas Background */}
+<canvas ref={canvasRef} style={{ position: "absolute", top: 0, left: 0, zIndex: 0 }} />
 
-      <canvas ref={canvasRef} style={{ position: "absolute", top: 0, left: 0, zIndex: 0 }} />
-
-      {/* Sidebar */}
+    {/* Sidebar */}
       <div
         style={{
           position: "absolute",
